@@ -1,0 +1,25 @@
+version: '3.8'
+services:
+  mcp-sqlite-server:
+    image: node:20-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run build && node dist/index.js --db ./data/app.db"
+    volumes:
+      - ./:/app
+      - sqlite-data:/app/data
+    ports:
+      - "3000:3000"
+    environment:
+      - SQLITE_DB_PATH=./data/app.db
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_CUSTOM_EXTENSIONS=/custom
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./n8n-nodes/dist:/custom
+volumes:
+  sqlite-data:
+  n8n-data:

@@ -1,147 +1,104 @@
-# Integración SQLite CRUD con n8n
+# SQLite CRUD n8n Custom Node
 
-Este directorio contiene los nodos personalizados de n8n para interactuar con bases de datos SQLite usando operaciones CRUD.
+Custom n8n node for interacting with SQLite databases (schema inspection, CRUD, custom SQL queries).
 
-## 🔧 Instalación
+## 🔧 Installation
 
-### 1. Navegar al directorio de nodos n8n
 ```bash
 cd n8n-nodes
-```
-
-### 2. Instalar dependencias
-```bash
 npm install
-```
-
-### 3. Compilar el paquete
-```bash
 npm run build
 ```
 
-### 4. Instalar en n8n
+Development load (Windows PowerShell):
 ```bash
-# Método 1: Instalación global
-npm install -g n8n-nodes-sqlite-crud
-
-# Método 2: Instalación local en n8n
-# Copiar el directorio dist/ a tu directorio de nodos personalizados de n8n
+setx N8N_CUSTOM_EXTENSIONS %CD%\n8n-nodes\dist
+# Open a new shell then start n8n in project root
+npx n8n
 ```
 
-## 📋 Configuración
+Docker variant provided in `docker-compose.yml` mounts `./n8n-nodes/dist` at `/custom`.
 
-### 1. Crear credenciales SQLite
-En n8n, crea una nueva credencial de tipo "SQLite Database" y configura:
-- **Database Path**: Ruta al archivo SQLite (ej: `/path/to/database.sqlite`)
+## 📋 Configuration
 
-### 2. Usar el nodo SQLite CRUD
-Agrega el nodo "SQLite CRUD" a tu workflow y selecciona las credenciales creadas.
+1. In n8n create new credentials "SQLite Database".
+2. Set Database Path (e.g. `./data/app.db`).
+3. Add the "SQLite CRUD" node and select the credentials.
 
-## 🚀 Operaciones disponibles
+## 🚀 Operations
 
-### 📊 Get Schema
-Obtiene el esquema completo de la base de datos.
+| Operation | Purpose |
+|-----------|---------|
+| Get Schema | Return all tables & columns |
+| Select | Fetch rows with limit/offset/filter/order |
+| Insert | Insert a record |
+| Update | Update record by id |
+| Delete | Delete record by id |
+| Execute Query | Run arbitrary SQL |
+
+### Example schema output
+
 ```json
 {
   "schema": {
     "users": [
-      {"cid": 0, "name": "id", "type": "INTEGER", "pk": 1},
-      {"cid": 1, "name": "name", "type": "TEXT", "pk": 0}
+      {"cid":0,"name":"id","type":"INTEGER","pk":1},
+      {"cid":1,"name":"name","type":"TEXT","pk":0}
     ]
   },
   "tableCount": 1
 }
 ```
 
-### 🔍 Select
-Obtiene datos de una tabla con filtros opcionales.
-**Parámetros:**
-- Table: Nombre de la tabla
-- Limit: Número máximo de registros (default: 100)
-- Offset: Registros a omitir (default: 0)
-- Where Condition: Filtro SQL opcional
-- Order By: Ordenamiento opcional
+## 💡 Workflow Examples
 
-### ➕ Insert
-Inserta un nuevo registro en una tabla.
-**Parámetros:**
-- Table: Nombre de la tabla
-- Data to Insert: Pares columna-valor a insertar
-
-### ✏️ Update
-Actualiza un registro existente por ID.
-**Parámetros:**
-- Table: Nombre de la tabla
-- Record ID: ID del registro a actualizar
-- Data to Update: Pares columna-valor a actualizar
-
-### ❌ Delete
-Elimina un registro por ID.
-**Parámetros:**
-- Table: Nombre de la tabla
-- Record ID: ID del registro a eliminar
-
-### 🔧 Execute Query
-Ejecuta una query SQL personalizada.
-**Parámetros:**
-- SQL Query: Query SQL a ejecutar
-
-## 💡 Ejemplos de uso en workflows n8n
-
-### Ejemplo 1: Sincronizar datos de API a SQLite
-```
-HTTP Request (API) → SQLite CRUD (Insert) → Email notification
+```text
+HTTP Request → SQLite CRUD (Insert) → Email
+Schedule Trigger → SQLite CRUD (Select) → Transform → Slack
+Webhook → Validate → SQLite CRUD (Insert/Update) → Analytics
+Cron → SQLite CRUD (Execute Query: DELETE ...) → Log
 ```
 
-### Ejemplo 2: Generar reportes automáticos
-```
-Schedule Trigger → SQLite CRUD (Select) → Data transformation → Email/Slack
-```
+## 📁 Structure
 
-### Ejemplo 3: Pipeline de datos
-```
-Webhook → Data validation → SQLite CRUD (Insert/Update) → Analytics
-```
-
-### Ejemplo 4: Limpieza de datos programada
-```
-Cron → SQLite CRUD (Execute Query: DELETE old records) → Log results
-```
-
-## 📁 Estructura del proyecto
-
-```
+```text
 n8n-nodes/
-├── credentials/
-│   └── SqliteApi.credentials.ts    # Credenciales para SQLite
-├── nodes/
-│   └── Sqlite/
-│       ├── Sqlite.node.ts          # Nodo principal SQLite CRUD
-│       └── sqlite.svg              # Icono del nodo
-├── package.json                    # Configuración del paquete n8n
-├── tsconfig.json                   # Configuración TypeScript
-└── gulpfile.js                     # Build tools
+├── credentials/SqliteApi.credentials.ts
+├── nodes/Sqlite/Sqlite.node.ts
+├── nodes/Sqlite/sqlite.svg
+├── package.json
+├── tsconfig.json
+└── gulpfile.js
 ```
 
-## 🔒 Seguridad
+## 🔒 Security
 
-- Las credenciales se almacenan de forma segura en n8n
-- Solo se permite acceso a archivos SQLite especificados
-- Validación de parámetros para prevenir inyección SQL
+- Credential storage handled by n8n
+- Only the specified DB path is accessed
+- Parameters are bound where applicable to reduce injection risk
 
-## 🛠️ Desarrollo
+## 🛠 Development
 
-Para modificar o extender los nodos:
+1. Edit TypeScript
+2. `npm run build`
+3. Restart n8n
 
-1. Edita los archivos TypeScript en `nodes/` o `credentials/`
-2. Ejecuta `npm run build` para compilar
-3. Reinicia n8n para cargar los cambios
+## 🗄️ Persistence
 
-## 📞 Integración con el servidor MCP
+Use Docker compose volumes or keep your `.n8n` runtime dir outside version control (already ignored). SQLite files can live in `./data/` (mounted to a volume in Docker for durability).
 
-Este nodo n8n puede trabajar en conjunto con el servidor MCP SQLite CRUD:
-- **n8n**: Para workflows automatizados y integraciones
-- **MCP**: Para interacción con Copilot y desarrollo
-- **HTTP API**: Para aplicaciones web y microservicios
+## 📦 Publishing
 
-Todos comparten la misma base de datos SQLite, proporcionando una solución completa y flexible.
+Adjust `package.json` name (e.g. `@yourscope/n8n-nodes-sqlite-crud`) and run:
+
+```bash
+npm publish --access public
+```
+
+## 🤝 Integration With MCP & HTTP
+
+Share the same SQLite file among: MCP server, HTTP API, n8n workflows.
+
+## 📄 License
+
+MIT (see root `LICENSE`).
