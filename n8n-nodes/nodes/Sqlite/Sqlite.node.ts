@@ -4,6 +4,7 @@ import {
 	INodeType,
 	INodeTypeDescription,
 	NodeOperationError,
+	NodeConnectionType,
 } from 'n8n-workflow';
 
 import { open } from 'sqlite';
@@ -17,12 +18,12 @@ export class Sqlite implements INodeType {
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"] + ": " + $parameter["table"]}}',
-		description: 'Operaciones CRUD en base de datos SQLite',
+		description: 'CRUD operations on a SQLite database',
 		defaults: {
 			name: 'SQLite CRUD',
 		},
-		inputs: ['main'],
-		outputs: ['main'],
+		inputs: [NodeConnectionType.Main],
+		outputs: [NodeConnectionType.Main],
 		credentials: [
 			{
 				name: 'sqliteApi',
@@ -83,8 +84,8 @@ export class Sqlite implements INodeType {
 				type: 'string',
 				typeOptions: {
 					alwaysOpenEditWindow: true,
-					editor: 'code',
-					editorLanguage: 'sql',
+					editor: 'sqlEditor',
+					sqlDialect: 'SQLite',
 				},
 				displayOptions: {
 					show: {
@@ -93,7 +94,7 @@ export class Sqlite implements INodeType {
 				},
 				default: 'SELECT * FROM table_name',
 				placeholder: 'SELECT * FROM users WHERE age > 18',
-				description: 'La query SQL a ejecutar',
+				description: 'SQL query to execute',
 			},
 
 			// Campos para operaciones de tabla
@@ -265,57 +266,82 @@ export class Sqlite implements INodeType {
 		for (let i = 0; i < items.length; i++) {
 			try {
 				const operation = this.getNodeParameter('operation', i) as string;
-				
-				// Abrir conexión a la base de datos
-				const db = await open({
-					filename: databasePath,
-					driver: sqlite3.Database
-				});
+
+				const db = await open({ filename: databasePath, driver: sqlite3.Database });
 
 				let result: any;
-
-				switch (operation) {
-					case 'getSchema':
-						result = await this.getSchema(db);
-						break;
-					case 'executeQuery':
-						result = await this.executeQuery(db, i);
-						break;
-					case 'select':
-						result = await this.selectData(db, i);
-						break;
-					case 'insert':
-						result = await this.insertData(db, i);
-						break;
-					case 'update':
-						result = await this.updateData(db, i);
-						break;
-					case 'delete':
-						result = await this.deleteData(db, i);
-						break;
-					default:
-						throw new NodeOperationError(this.getNode(), `Operación desconocida: ${operation}`);
+				if (operation === 'getSchema') {
+					const tables = await db.all(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`);
+					const schema: Record<string, unknown> = {};
+						for (const table of tables) {
+							const columns = await db.all(`PRAGMA table_info(${table.name})`);
+							schema[table.name] = columns;
+						}
+					result = { schema, tableCount: tables.length };
+				} else if (operation === 'executeQuery') {
+					const sqlQuery = this.getNodeParameter('sqlQuery', i) as string;
+					const isReadQuery = /^\s*(SELECT|PRAGMA)/i.test(sqlQuery);
+					if (isReadQuery) {
+						const rows = await db.all(sqlQuery);
+						result = { data: rows, rowCount: rows.length };
+					} else {
+						const r = await db.run(sqlQuery);
+						result = { changes: r.changes, lastID: r.lastID, message: 'Query executed successfully' };
+					}
+				} else if (operation === 'select') {
+					const table = this.getNodeParameter('table', i) as string;
+					const limit = this.getNodeParameter('limit', i) as number;
+					const offset = this.getNodeParameter('offset', i) as number;
+					const whereCondition = this.getNodeParameter('whereCondition', i) as string;
+					const orderBy = this.getNodeParameter('orderBy', i) as string;
+					let sql = `SELECT * FROM ${table}`;
+					if (whereCondition) sql += ` WHERE ${whereCondition}`;
+					if (orderBy) sql += ` ORDER BY ${orderBy}`;
+					sql += ' LIMIT ? OFFSET ?';
+					const data = await db.all(sql, [limit, offset]);
+					let countSql = `SELECT COUNT(*) as total FROM ${table}`;
+					if (whereCondition) countSql += ` WHERE ${whereCondition}`;
+					const countResult = await db.get(countSql);
+					result = { data, total: countResult.total, limit, offset, table };
+				} else if (operation === 'insert') {
+					const table = this.getNodeParameter('table', i) as string;
+					const dataToInsert = this.getNodeParameter('dataToInsert', i) as any;
+					const data: Record<string, any> = {};
+					if (dataToInsert.values) {
+						for (const v of dataToInsert.values) data[v.column] = v.value;
+					}
+					const columns = Object.keys(data);
+					const values = Object.values(data);
+					const placeholders = columns.map(() => '?').join(', ');
+					const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
+					const r = await db.run(sql, values);
+					result = { id: r.lastID, changes: r.changes, message: 'Record created successfully', table };
+				} else if (operation === 'update') {
+					const table = this.getNodeParameter('table', i) as string;
+					const recordId = this.getNodeParameter('recordId', i) as string;
+					const dataToUpdate = this.getNodeParameter('dataToUpdate', i) as any;
+					const data: Record<string, any> = {};
+					if (dataToUpdate.values) for (const v of dataToUpdate.values) data[v.column] = v.value;
+					const columns = Object.keys(data);
+					const values = Object.values(data);
+					const setClause = columns.map((c) => `${c} = ?`).join(', ');
+					const sql = `UPDATE ${table} SET ${setClause} WHERE id = ?`;
+					const r = await db.run(sql, [...values, recordId]);
+					result = { changes: r.changes || 0, message: (r.changes || 0) > 0 ? 'Record updated successfully' : 'No record found with that ID', table, id: recordId };
+				} else if (operation === 'delete') {
+					const table = this.getNodeParameter('table', i) as string;
+					const recordId = this.getNodeParameter('recordId', i) as string;
+					const r = await db.run(`DELETE FROM ${table} WHERE id = ?`, [recordId]);
+					result = { changes: r.changes || 0, message: (r.changes || 0) > 0 ? 'Record deleted successfully' : 'No record found with that ID', table, id: recordId };
+				} else {
+					throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`);
 				}
 
 				await db.close();
-
-				returnData.push({
-					json: result,
-					pairedItem: {
-						item: i,
-					},
-				});
-
-			} catch (error) {
+				returnData.push({ json: result, pairedItem: { item: i } });
+			} catch (error: any) {
 				if (this.continueOnFail()) {
-					returnData.push({
-						json: {
-							error: error.message,
-						},
-						pairedItem: {
-							item: i,
-						},
-					});
+					returnData.push({ json: { error: error?.message || error }, pairedItem: { item: i } });
 					continue;
 				}
 				throw error;
@@ -323,144 +349,5 @@ export class Sqlite implements INodeType {
 		}
 
 		return [returnData];
-	}
-
-	private async getSchema(db: any) {
-		const tables = await db.all(`
-			SELECT name FROM sqlite_master 
-			WHERE type='table' AND name NOT LIKE 'sqlite_%'
-		`);
-		
-		const schema: any = {};
-		for (const table of tables) {
-			const columns = await db.all(`PRAGMA table_info(${table.name})`);
-			schema[table.name] = columns;
-		}
-		
-		return { schema, tableCount: tables.length };
-	}
-
-	private async executeQuery(db: any, itemIndex: number) {
-		const sqlQuery = this.getNodeParameter('sqlQuery', itemIndex) as string;
-		
-		const isReadQuery = /^\s*(SELECT|PRAGMA)/i.test(sqlQuery);
-		
-		if (isReadQuery) {
-			const result = await db.all(sqlQuery);
-			return { data: result, rowCount: result.length };
-		} else {
-			const result = await db.run(sqlQuery);
-			return { 
-				changes: result.changes, 
-				lastID: result.lastID,
-				message: 'Query executed successfully' 
-			};
-		}
-	}
-
-	private async selectData(db: any, itemIndex: number) {
-		const table = this.getNodeParameter('table', itemIndex) as string;
-		const limit = this.getNodeParameter('limit', itemIndex) as number;
-		const offset = this.getNodeParameter('offset', itemIndex) as number;
-		const whereCondition = this.getNodeParameter('whereCondition', itemIndex) as string;
-		const orderBy = this.getNodeParameter('orderBy', itemIndex) as string;
-
-		let sql = `SELECT * FROM ${table}`;
-		const params: any[] = [];
-
-		if (whereCondition) {
-			sql += ` WHERE ${whereCondition}`;
-		}
-
-		if (orderBy) {
-			sql += ` ORDER BY ${orderBy}`;
-		}
-
-		sql += ` LIMIT ? OFFSET ?`;
-		params.push(limit, offset);
-
-		const data = await db.all(sql, params);
-
-		// Contar total de registros
-		let countSql = `SELECT COUNT(*) as total FROM ${table}`;
-		if (whereCondition) {
-			countSql += ` WHERE ${whereCondition}`;
-		}
-		const countResult = await db.get(countSql);
-
-		return { 
-			data, 
-			total: countResult.total,
-			limit,
-			offset,
-			table
-		};
-	}
-
-	private async insertData(db: any, itemIndex: number) {
-		const table = this.getNodeParameter('table', itemIndex) as string;
-		const dataToInsert = this.getNodeParameter('dataToInsert', itemIndex) as any;
-
-		const data: any = {};
-		if (dataToInsert.values) {
-			for (const item of dataToInsert.values) {
-				data[item.column] = item.value;
-			}
-		}
-
-		const columns = Object.keys(data);
-		const values = Object.values(data);
-		const placeholders = columns.map(() => '?').join(', ');
-
-		const sql = `INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`;
-		const result = await db.run(sql, values);
-
-		return { 
-			id: result.lastID, 
-			changes: result.changes,
-			message: 'Record created successfully',
-			table
-		};
-	}
-
-	private async updateData(db: any, itemIndex: number) {
-		const table = this.getNodeParameter('table', itemIndex) as string;
-		const recordId = this.getNodeParameter('recordId', itemIndex) as string;
-		const dataToUpdate = this.getNodeParameter('dataToUpdate', itemIndex) as any;
-
-		const data: any = {};
-		if (dataToUpdate.values) {
-			for (const item of dataToUpdate.values) {
-				data[item.column] = item.value;
-			}
-		}
-
-		const columns = Object.keys(data);
-		const values = Object.values(data);
-		const setClause = columns.map(col => `${col} = ?`).join(', ');
-
-		const sql = `UPDATE ${table} SET ${setClause} WHERE id = ?`;
-		const result = await db.run(sql, [...values, recordId]);
-
-		return { 
-			changes: result.changes || 0,
-			message: (result.changes || 0) > 0 ? 'Record updated successfully' : 'No record found with that ID',
-			table,
-			id: recordId
-		};
-	}
-
-	private async deleteData(db: any, itemIndex: number) {
-		const table = this.getNodeParameter('table', itemIndex) as string;
-		const recordId = this.getNodeParameter('recordId', itemIndex) as string;
-
-		const result = await db.run(`DELETE FROM ${table} WHERE id = ?`, [recordId]);
-
-		return { 
-			changes: result.changes || 0,
-			message: (result.changes || 0) > 0 ? 'Record deleted successfully' : 'No record found with that ID',
-			table,
-			id: recordId
-		};
 	}
 }
