@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "sqlite-crud": {
+      "command": "node",
+      "args": ["dist/index.js"],
+      "cwd": "d:\\MyProjects\\mcp-sqlite",
+      "env": {
+        "SQLITE_DB_PATH": "./database.sqlite"
+      }
+    }
+  }
+}
