@@ -2,6 +2,8 @@
 import express, { Request, Response } from 'express';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import fs from 'fs';
+import path from 'path';
 
 const app = express();
 app.use(express.json());
@@ -206,6 +208,40 @@ app.delete('/table/:tableName/:id', async (req: Request, res: Response) => {
   }
 });
 
+// Crear (o cambiar a) una nueva base de datos en una ruta parametrizable
+app.post('/database/create', async (req: Request, res: Response) => {
+  try {
+    const { dbPath, schemaStatements = [], switchActive = true } = req.body;
+    if (!dbPath || typeof dbPath !== 'string') {
+      return res.status(400).json({ error: 'dbPath (string) is required' });
+    }
+
+    const absolutePath = path.resolve(dbPath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+
+    const newDb = await open({ filename: absolutePath, driver: sqlite3.Database });
+    for (const stmt of schemaStatements) {
+      if (typeof stmt === 'string' && stmt.trim()) {
+        await newDb.exec(stmt);
+      }
+    }
+    await newDb.close();
+
+    if (switchActive) {
+      DB_PATH = absolutePath;
+    }
+
+    res.json({ 
+      dbPath: absolutePath, 
+      switched: !!switchActive, 
+      appliedStatements: schemaStatements.length,
+      message: 'Database created successfully' 
+    });
+  } catch (error) {
+    handleDbError(error, res);
+  }
+});
+
 // ============== ENDPOINTS ESPECÍFICOS PARA LA TABLA ITEMS (compatibilidad) ==============
 
 
@@ -281,6 +317,7 @@ app.listen(3000, () => {
   console.log('POST /table/:tableName - Crear registro en una tabla');
   console.log('PUT /table/:tableName/:id - Actualizar registro');
   console.log('DELETE /table/:tableName/:id - Eliminar registro');
+  console.log('POST /database/create - Crear nueva base de datos y (opcional) cambiar a ella');
   console.log('\n=== Endpoints específicos (compatibilidad) ===');
   console.log('GET /items - Obtener todos los items');
   console.log('POST /items - Crear nuevo item');

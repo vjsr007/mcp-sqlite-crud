@@ -5,8 +5,10 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import sqlite3 from 'sqlite3';
 import { open } from 'sqlite';
+import fs from 'fs';
+import path from 'path';
 
-// Configuración de la base de datos
+// Database configuration
 const DEFAULT_DB_PATH = './database.sqlite';
 let DB_PATH = process.env.SQLITE_DB_PATH || DEFAULT_DB_PATH;
 
@@ -23,7 +25,7 @@ async function setupDb() {
   return db;
 }
 
-// Crear el servidor MCP
+// Create MCP server
 const server = new Server(
   {
     name: 'sqlite-crud-mcp',
@@ -36,13 +38,13 @@ const server = new Server(
   }
 );
 
-// Herramientas MCP
+// MCP tools
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       {
         name: 'get_schema',
-        description: 'Obtiene el esquema completo de la base de datos SQLite',
+  description: 'Get the full schema (tables & columns) for the current SQLite database',
         inputSchema: {
           type: 'object',
           properties: {},
@@ -50,17 +52,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'execute_query',
-        description: 'Ejecuta una query SQL personalizada en la base de datos',
+  description: 'Execute an arbitrary SQL statement (SELECT/PRAGMA returns rows; others return changes)',
         inputSchema: {
           type: 'object',
           properties: {
             sql: {
               type: 'string',
-              description: 'La query SQL a ejecutar',
+              description: 'The SQL query to execute',
             },
             params: {
               type: 'array',
-              description: 'Parámetros para la query SQL',
+              description: 'Optional positional parameters for the SQL query',
               items: {
                 type: 'string',
               },
@@ -71,29 +73,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'get_table_data',
-        description: 'Obtiene datos de una tabla específica con filtros opcionales',
+  description: 'Fetch rows from a table with optional where/order/limit/offset',
         inputSchema: {
           type: 'object',
           properties: {
             tableName: {
               type: 'string',
-              description: 'Nombre de la tabla',
+              description: 'Table name',
             },
             limit: {
               type: 'number',
-              description: 'Límite de registros (default: 100)',
+              description: 'Max rows to return (default 100)',
             },
             offset: {
               type: 'number',
-              description: 'Offset para paginación (default: 0)',
+              description: 'Offset for pagination (default 0)',
             },
             where: {
               type: 'string',
-              description: 'Condición WHERE opcional',
+              description: 'Optional WHERE clause (without the word WHERE)',
             },
             orderBy: {
               type: 'string',
-              description: 'Orden opcional (ej: "name ASC")',
+              description: 'Optional ORDER BY clause (e.g. "name ASC")',
             },
           },
           required: ['tableName'],
@@ -101,17 +103,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'insert_record',
-        description: 'Inserta un nuevo registro en una tabla',
+  description: 'Insert a new record into a table',
         inputSchema: {
           type: 'object',
           properties: {
             tableName: {
               type: 'string',
-              description: 'Nombre de la tabla',
+              description: 'Table name',
             },
             data: {
               type: 'object',
-              description: 'Datos del registro a insertar (clave-valor)',
+              description: 'Key-value object representing the new row',
             },
           },
           required: ['tableName', 'data'],
@@ -119,21 +121,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'update_record',
-        description: 'Actualiza un registro existente por ID',
+  description: 'Update an existing record by id column',
         inputSchema: {
           type: 'object',
           properties: {
             tableName: {
               type: 'string',
-              description: 'Nombre de la tabla',
+              description: 'Table name',
             },
             id: {
               type: 'string',
-              description: 'ID del registro a actualizar',
+              description: 'ID of the record (value of id column)',
             },
             data: {
               type: 'object',
-              description: 'Datos a actualizar (clave-valor)',
+              description: 'Key-value object of columns to update',
             },
           },
           required: ['tableName', 'id', 'data'],
@@ -141,21 +143,44 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: 'delete_record',
-        description: 'Elimina un registro por ID',
+  description: 'Delete a record by id column',
         inputSchema: {
           type: 'object',
           properties: {
             tableName: {
               type: 'string',
-              description: 'Nombre de la tabla',
+              description: 'Table name',
             },
             id: {
               type: 'string',
-              description: 'ID del registro a eliminar',
+              description: 'ID of the record (value of id column)',
             },
           },
           required: ['tableName', 'id'],
         },
+      },
+      {
+        name: 'create_database',
+  description: 'Create (or switch to) a new SQLite database file and optionally run schema statements',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            dbPath: {
+              type: 'string',
+              description: 'Absolute or relative path to the .sqlite file (directories will be created)'
+            },
+            schemaStatements: {
+              type: 'array',
+              description: 'Optional list of SQL statements (CREATE TABLE etc.) to run after creation',
+              items: { type: 'string' }
+            },
+            switchActive: {
+              type: 'boolean',
+              description: 'If true (default) the server will use this new DB for subsequent operations'
+            }
+          },
+          required: ['dbPath']
+        }
       },
     ],
   };
@@ -334,8 +359,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
       
+      case 'create_database': {
+        const { dbPath, schemaStatements = [], switchActive = true } = args as any;
+        if (typeof dbPath !== 'string' || !dbPath.trim()) {
+          throw new Error('dbPath must be a non-empty string');
+        }
+
+  // Close current connection before switching
+        await db.close();
+
+        const absolutePath = path.resolve(dbPath);
+        const dir = path.dirname(absolutePath);
+        try {
+          const root = path.parse(dir).root;
+            if (!fs.existsSync(dir) && dir !== root) {
+              fs.mkdirSync(dir, { recursive: true });
+            }
+        } catch (e: any) {
+          throw new Error(`Failed to ensure directory for database: ${e.message}`);
+        }
+  // Open (created if missing)
+        const newDb = await open({ filename: absolutePath, driver: sqlite3.Database });
+
+        for (const stmt of schemaStatements) {
+          if (typeof stmt === 'string' && stmt.trim()) {
+            await newDb.exec(stmt);
+          }
+        }
+
+        await newDb.close();
+
+        if (switchActive) {
+          DB_PATH = absolutePath;
+        }
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({ 
+                dbPath: absolutePath,
+                switched: !!switchActive,
+                appliedStatements: schemaStatements.length,
+                message: 'Database created successfully' 
+              }, null, 2),
+            },
+          ],
+        };
+      }
+      
       default:
-        throw new Error(`Herramienta desconocida: ${name}`);
+  throw new Error(`Unknown tool: ${name}`);
     }
   } catch (error: any) {
     return {
@@ -350,7 +424,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
-// Iniciar el servidor
+// Start server
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);

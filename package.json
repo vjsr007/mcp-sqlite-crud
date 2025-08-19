@@ -1,12 +1,25 @@
 {
   "name": "mcp-sqlite",
-  "version": "1.0.0",
+  "version": "1.0.1",
+  "description": "SQLite CRUD MCP server (HTTP + MCP tools)",
   "main": "src/index.ts",
+  "bin": {
+    "mcp-sqlite": "dist/src/mcp-server.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "start": "node --loader ts-node/esm src/index.ts",
+    "start": "npm run build && node dist/index.js",
     "dev": "ts-node src/index.ts",
     "build": "tsc",
-    "mcp": "node dist/mcp-server.js"
+    "mcp": "npm run build && node dist/mcp-server.js",
+  "build:all": "tsc",
+  "test:mcp": "npm run build && ts-node test/mcp-test.ts",
+  "test:autos": "npm run build && ts-node test/mcp-create-autos.ts",
+  "prepare": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.3",
